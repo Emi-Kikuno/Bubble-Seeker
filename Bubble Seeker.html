@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Bubble Seeker</title>
+  <style>
+    :root{ --bg:#0b1020; --fg:#e6ecff; --accent:#6ba4ff; --danger:#ff5d73; --ok:#66e0a3; }
+    html,body{height:100%;}
+    body{margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;}
+
+    /* Canvas sits at the bottom so UI stays clickable */
+    canvas{position:fixed; inset:0; display:block; touch-action:manipulation; z-index:0;}
+
+    .hud{position:fixed; inset:0 0 auto 0; display:flex; align-items:center; gap:12px; padding:10px env(safe-area-inset-right) 10px env(safe-area-inset-left); background:linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0)); pointer-events:none; z-index:20}
+    .badge{pointer-events:auto; background:#111a; border:1px solid #fff2; border-radius:10px; padding:6px 10px; display:flex; gap:8px; align-items:center; backdrop-filter:saturate(1.2) blur(4px)}
+    .badge strong{font-weight:700}
+    .challenge{pointer-events:auto; flex:1; min-width:0; background:#111a; border:1px solid #fff2; border-radius:12px; padding:6px 10px; display:flex; flex-direction:column; gap:6px}
+    #challengeText{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    .prog{height:8px; border-radius:999px; background:#ffffff14; border:1px solid #ffffff30; overflow:hidden}
+    .prog>span{display:block; height:100%; width:100%; transform-origin:left center; background:linear-gradient(90deg,#6ba4ff,#b07bff,#ff6bd6)}
+    .timer{font-variant-numeric:tabular-nums;}
+    .timer.low{color:var(--danger)}
+    .btn{pointer-events:auto; background:#ffffff18; color:var(--fg); border:1px solid #ffffff30; padding:6px 10px; border-radius:10px; cursor:pointer}
+    .btn:hover{background:#ffffff26}
+
+    .toast{position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); background:#111a; color:var(--fg); border:1px solid #fff2; border-radius:12px; padding:14px 16px; opacity:0; transition:opacity .2s ease; max-width:min(92vw,480px); text-align:center; z-index:30}
+    .toast.show{opacity:1}
+
+    .health{pointer-events:auto; width:160px; height:12px; border-radius:999px; border:1px solid #fff2; background:#ffffff10; overflow:hidden;}
+    .health > span{display:block; height:100%; width:100%; background:linear-gradient(90deg, var(--ok), #f6d365); transform-origin:left center}
+
+    /* Mobile-first HUD fit */
+    @media (max-width: 640px) {
+      .hud{flex-wrap:wrap; row-gap:8px; column-gap:8px; padding-top:calc(env(safe-area-inset-top,0px) + 6px)}
+      .badge{padding:6px 8px}
+      .challenge{order:3; width:100%;}
+      .btn{margin-left:auto}
+      .health{width:140px; height:10px}
+      .prog{height:10px}
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div class="hud" id="hud">
+    <div class="badge"><strong>Score</strong><span id="score">0</span></div>
+    <div class="badge"><strong>Health</strong><div class="health"><span id="healthFill"></span></div></div>
+    <div class="badge timer" id="timer">30.0</div>
+    <div class="challenge" id="challenge"><div id="challengeText">—</div><div class="prog"><span id="progFill"></span></div></div>
+    <button class="btn" id="restart" type="button" role="button" aria-label="Restart">Restart</button>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+  (function(){
+    // ---------- Utilities ----------
+    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+    const rand=(a,b)=>a+Math.random()*(b-a);
+    const choice=a=>a[(Math.random()*a.length)|0];
+    const dist2=(ax,ay,bx,by)=>{const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy;}
+
+    // ---------- Canvas / DPI ----------
+    const canvas = document.getElementById('game');
+    const hudEl = document.getElementById('hud');
+    const ctx = canvas.getContext('2d');
+    let DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    let W=0,H=0, board = {x:0,y:0,w:0,h:0};
+    function hudHeight(){
+      const r = hudEl.getBoundingClientRect();
+      return Math.ceil(r.height + 6); // +6px breathing room
+    }
+    function resize(){
+      DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const rect = document.body.getBoundingClientRect();
+      W = Math.floor(rect.width); H = Math.floor(rect.height);
+      canvas.width = Math.floor(W*DPR); canvas.height = Math.floor(H*DPR);
+      canvas.style.width = W+'px'; canvas.style.height = H+'px';
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+      const topInset = hudHeight();
+      const margin = 8;
+      board.x = margin; board.y = topInset; board.w = W - margin*2; board.h = H - topInset - margin;
+    }
+
+    // ---------- Game State ----------
+    const COLORS = ['blue','red','yellow','green'];
+    const SHAPES = ['triangle','circle','square'];
+    const SIZES = ['S','M','L'];
+
+    // Slightly larger small bubbles
+    const sizeRadius = size=> size==='S'? 15 : size==='M'? 20 : 25;
+    const ballRadius = 12;
+
+    let game, bubbles=[], collectedBuffer=[];
+
+    function newGame(pauseFirst=false){
+  bubbles.length=0; 
+  collectedBuffer.length=0;
+
+  // Calculate bubble limits based on board size
+  const boardArea = board.w * board.h;
+  const bubbleArea = Math.PI * Math.pow(sizeRadius('M'), 2); // average bubble area
+  const maxBubbles = Math.floor(boardArea / (bubbleArea * 10)); // spacing factor
+
+  game = {
+    running:true, 
+    over:false, 
+    paused:false,
+    score:0, 
+    timeLeft:30,
+    ball:{ 
+      pos:{x:board.x+board.w/2, y:board.y+board.h/2}, 
+      heading:{x:1,y:0}, 
+      speed:150, 
+      speedCap:450, 
+      target:null, 
+      targetQueue:[] 
+    },
+    drift:{amp:18, ampCap:60, freq:0.6, freqCap:1.4},
+    population: {
+      current: Math.min(20, maxBubbles),
+      max: maxBubbles
+    },
+    completed:0,
+    challenge:null, 
+    progress:0,
+    hitGrace:0,
+    health:1.0,
+  };
+
+  spawnInitial(game.population.current);
+  nextChallenge(pauseFirst);
+  updateHUD();
+}
+
+
+    function makeBubble(opts={}){
+      const size = opts.size || choice(SIZES);
+      const r = sizeRadius(size);
+      const b = { id: self.crypto ? crypto.randomUUID() : String(Math.random()), x: opts.x ?? rand(board.x+r, board.x+board.w-r), y: opts.y ?? rand(board.y+r, board.y+board.h-r), size, r, color: opts.color || choice(COLORS), shape: opts.shape || choice(SHAPES), driftPhaseX: Math.random()*Math.PI*2, driftPhaseY: Math.random()*Math.PI*2 };
+      return b;
+    }
+
+    function nonOverlappingPosition(r, tries=32){
+  const px = game.ball.pos.x;
+  const py = game.ball.pos.y;
+  const safeDist = r + ballRadius + 10; // 10px extra padding
+
+  for(let i=0;i<tries;i++){
+    const x = rand(board.x+r, board.x+board.w-r);
+    const y = rand(board.y+r, board.y+board.h-r);
+
+    let ok = true;
+
+    // Check distance from player ball
+    if (dist2(x, y, px, py) < safeDist * safeDist) {
+      ok = false;
+    }
+
+    // Check distance from other bubbles
+    for(const b of bubbles){
+      if(dist2(x, y, b.x, b.y) < (r + b.r + 6) ** 2){
+        ok = false;
+        break;
+      }
+    }
+
+    if(ok) return {x, y};
+  }
+
+  // Fallback if all tries fail
+  return {x: rand(board.x+r, board.x+board.w-r), y: rand(board.y+r, board.y+board.h-r)};
+}
+
+function resolveOverlaps(){
+  const n = bubbles.length;
+  for(let i=0;i<n;i++){
+    const bi = bubbles[i];
+    for(let j=i+1;j<n;j++){
+      const bj = bubbles[j];
+      const dx = bj.x - bi.x;
+      const dy = bj.y - bi.y;
+      const minDist = bi.r + bj.r + 1;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < minDist*minDist) {
+        const d = Math.max(0.0001, Math.sqrt(d2));
+        const nx = dx / d, ny = dy / d;
+        const overlap = (minDist - d);
+
+        const w1 = bj.r / (bi.r + bj.r);
+        const w2 = bi.r / (bi.r + bj.r);
+        bi.x -= nx * overlap * w1;
+        bi.y -= ny * overlap * w1;
+        bj.x += nx * overlap * w2;
+        bj.y += ny * overlap * w2;
+
+        bi.driftPhaseX += Math.PI; bi.driftPhaseY += Math.PI;
+        bj.driftPhaseX += Math.PI; bj.driftPhaseY += Math.PI;
+      }
+    }
+  }
+}
+
+
+function spawnInitial(n){
+  for(let i=0;i<n;i++){
+    const b = makeBubble();
+    const p = nonOverlappingPosition(b.r);
+    b.x = p.x;
+    b.y = p.y;
+    bubbles.push(b);
+  }
+  resolveOverlaps();
+}
+
+
+function replaceCollectedAndGrow(){
+  for(const _ of collectedBuffer){
+    const b = makeBubble();
+    const p = nonOverlappingPosition(b.r);
+    b.x = p.x;
+    b.y = p.y;
+    bubbles.push(b);
+  }
+  collectedBuffer.length = 0;
+
+  if(bubbles.length < game.population.max){
+    const add = (game.completed % 2 === 0) ? 2 : 1;
+    for(let i = 0; i < add; i++){
+      const b = makeBubble();
+      const p = nonOverlappingPosition(b.r);
+      b.x = p.x;
+      b.y = p.y;
+      bubbles.push(b);
+    }
+  }
+
+  game.population.current = Math.min(bubbles.length, game.population.max);
+
+  // Push apart any overlapping bubbles
+  resolveOverlaps();
+}
+
+
+    function nextChallenge(pauseAnnounce=false){
+      const count = 3;
+      const size = choice(SIZES); const color = choice(COLORS); const shape = choice(SHAPES);
+      game.challenge = {size, color, shape, count}; game.progress = 0;
+      const need = count - bubbles.filter(b=> matches(b, game.challenge)).length;
+      for(let i=0;i<need;i++){ const b = makeBubble({size,color,shape}); const p = nonOverlappingPosition(b.r); b.x=p.x; b.y=p.y; bubbles.push(b); }
+      updateHUD();
+      if(pauseAnnounce){
+        game.paused = true;
+        toast(`Next: ${challengeText(game.challenge)}`, 3000, ()=>{ game.paused = false; });
+      }
+    }
+
+    function matches(b, ch){ return b.size===ch.size && b.color===ch.color && b.shape===ch.shape; }
+
+    function challengeText(ch){
+      const sizeName = ch.size==='S'?'Small': ch.size==='M'?'Medium':'Large';
+      const colorName = ch.color[0].toUpperCase()+ch.color.slice(1);
+      const shapeName = ch.shape[0].toUpperCase()+ch.shape.slice(1);
+      return `Collect ${ch.count} ${sizeName} ${colorName} ${shapeName}${ch.count>1?'s':''}`;
+    }
+
+    function canvasPointFromEvent(e){ const rect = canvas.getBoundingClientRect(); return {x: clamp(e.clientX - rect.left, board.x, board.x+board.w), y: clamp(e.clientY - rect.top, board.y, board.y+board.h)}; }
+    canvas.addEventListener('pointerdown', e=>{ if(!game || !game.running || game.paused) return; const p = canvasPointFromEvent(e); game.ball.targetQueue.push(p); if(!game.ball.target) game.ball.target = game.ball.targetQueue.shift(); });
+
+    let last=performance.now();
+    function loop(now){
+      const dt = clamp((now-last)/1000, 0, 0.05); last=now;
+      if(!game || !game.running){ render(); requestAnimationFrame(loop); return; }
+      if(!game.paused){ step(dt); }
+      render(); requestAnimationFrame(loop);
+    }
+
+    function step(dt){
+      game.timeLeft -= dt; game.hitGrace = Math.max(0, game.hitGrace - dt); if(game.timeLeft <= 0){ game.timeLeft = 0; return gameOver('Time up!'); }
+      const s = game.ball; const r = ballRadius;
+      if(!s.target && s.targetQueue.length>0) s.target = s.targetQueue.shift();
+      if(s.target){ const dx = s.target.x - s.pos.x, dy = s.target.y - s.pos.y; const len = Math.hypot(dx,dy)||1; const dirX = dx/len, dirY = dy/len; s.heading.x = dirX; s.heading.y = dirY; s.pos.x += dirX*s.speed*dt; s.pos.y += dirY*s.speed*dt; const eps = Math.max(r*0.9, 18); const dot = (s.target.x - s.pos.x)*s.heading.x + (s.target.y - s.pos.y)*s.heading.y; if(len < eps || dot < 0){ s.target=null; } } else { s.pos.x += s.heading.x*s.speed*dt; s.pos.y += s.heading.y*s.speed*dt; }
+      if(s.pos.x < board.x+r){ s.pos.x = board.x+r; s.heading.x *= -1; s.target=null; }
+      if(s.pos.x > board.x+board.w-r){ s.pos.x = board.x+board.w-r; s.heading.x *= -1; s.target=null; }
+      if(s.pos.y < board.y+r){ s.pos.y = board.y+r; s.heading.y *= -1; s.target=null; }
+      if(s.pos.y > board.y+board.h-r){ s.pos.y = board.y+board.h-r; s.heading.y *= -1; s.target=null; }
+
+      const t = performance.now()/1000;
+      for(const b of bubbles){ const ax = game.drift.amp * Math.sin(game.drift.freq * t + b.driftPhaseX); const ay = game.drift.amp * Math.cos(game.drift.freq * t + b.driftPhaseY); b.x += ax*dt; b.y += ay*dt; if(b.x < board.x+b.r){ b.x = board.x+b.r; b.driftPhaseX += Math.PI/2; } if(b.x > board.x+board.w-b.r){ b.x = board.x+board.w-b.r; b.driftPhaseX += Math.PI/2; } if(b.y < board.y+b.r){ b.y = board.y+b.r; b.driftPhaseY += Math.PI/2; } if(b.y > board.y+board.h-b.r){ b.y = board.y+board.h-b.r; b.driftPhaseY += Math.PI/2; } }
+
+resolveOverlaps();// run once per frame
+
+  for(let i=bubbles.length-1;i>=0;i--){ const b=bubbles[i]; const rr = (r + b.r); if(dist2(s.pos.x,s.pos.y,b.x,b.y) <= rr*rr){ if(matches(b, game.challenge)){
+            game.score += 10; game.progress++; game.health = Math.min(1, game.health + 0.10);
+            collectedBuffer.push(b); bubbles.splice(i,1); s.pos.x += s.heading.x*2; s.pos.y += s.heading.y*2;
+            if(game.progress >= game.challenge.count){
+              game.score += 100; game.health = Math.min(1, game.health + 0.20);
+              game.timeLeft = 30; game.completed++;
+              const fSpeed = Math.min(1, game.completed/15);
+              const fDrift = Math.min(1, game.completed/20);
+              game.drift.amp = 18 + (game.drift.ampCap-18)*fDrift;
+              game.drift.freq = 0.6 + (game.drift.freqCap-0.6)*fDrift;
+              s.speed = 150 + (s.speedCap-150)*fSpeed;
+              replaceCollectedAndGrow(); nextChallenge(true); break; }
+          } else {
+            if(game.hitGrace <= 0){ game.health = Math.max(0, game.health - 0.15); game.hitGrace = 0.25; if(game.health <= 0){ return gameOver('No health left!'); } }
+            bubbles.splice(i,1); s.pos.x += s.heading.x*3; s.pos.y += s.heading.y*3; break; } } }
+
+      updateHUD();
+resolveOverlaps();
+    }
+
+
+    function gameOver(msg){ game.running=false; game.over=true; toast(msg+" Game Over."); }
+
+    function render(){
+      ctx.clearRect(0,0,W,H);
+      ctx.strokeStyle = '#ffffff22'; ctx.lineWidth = 1; ctx.strokeRect(board.x+0.5, board.y+0.5, board.w-1, board.h-1);
+      for(const b of bubbles){ drawBubble(b); }
+      const s = game?.ball; if(s){ const r = ballRadius; ctx.save(); ctx.shadowColor = '#ffff00'; ctx.shadowBlur = 24; ctx.fillStyle = '#ff00ff'; ctx.beginPath(); ctx.arc(s.pos.x, s.pos.y, r, 0, Math.PI*2); ctx.fill(); ctx.restore(); ctx.fillStyle = '#0b1020'; ctx.beginPath(); ctx.arc(s.pos.x + r*0.35*s.heading.x, s.pos.y + r*0.35*s.heading.y, r*0.25, 0, Math.PI*2); ctx.fill(); }
+      if(game && game.over){ ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(board.x, board.y, board.w, board.h); ctx.fillStyle = '#fff'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font = '700 28px system-ui'; ctx.fillText('Game Over', board.x+board.w/2, board.y+board.h/2 - 10); ctx.font = '16px system-ui'; ctx.fillText('Press Restart to play again', board.x+board.w/2, board.y+board.h/2 + 18); }
+    }
+
+    function drawBubble(b){ const colorMap = {blue:'#64a5ff', red:'#ff6b6b', yellow:'#ffd166', green:'#62e39f'}; ctx.fillStyle = colorMap[b.color] || '#bbb'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); const g = ctx.createRadialGradient(b.x-b.r*0.4, b.y-b.r*0.4, b.r*0.1, b.x, b.y, b.r); g.addColorStop(0,'#ffffff66'); g.addColorStop(1,'#00000022'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = '#00000044'; ctx.lineWidth = 2; ctx.stroke(); ctx.save(); ctx.translate(b.x, b.y); ctx.fillStyle = 'white'; const s2 = b.r*0.9; if(b.shape==='circle'){ ctx.beginPath(); ctx.arc(0,0,s2*0.42,0,Math.PI*2); ctx.fill(); } else if(b.shape==='square'){ ctx.beginPath(); ctx.rect(-s2*0.42,-s2*0.42,s2*0.84,s2*0.84); ctx.fill(); } else { ctx.beginPath(); const w = s2*0.9; const hh = (Math.sqrt(3)/2)*w; ctx.moveTo(0, -hh*0.8); ctx.lineTo(-w*0.45, hh*0.4); ctx.lineTo(w*0.45, hh*0.4); ctx.closePath(); ctx.fill(); } ctx.restore(); }
+
+    const elScore = document.getElementById('score');
+    const elTimer = document.getElementById('timer');
+    const elChalText = document.getElementById('challengeText');
+    const elProgFill = document.getElementById('progFill');
+    const elRestart = document.getElementById('restart');
+    const elToast = document.getElementById('toast');
+    const elHealthFill = document.getElementById('healthFill');
+
+    function updateHUD(){
+      elScore.textContent = String(game.score|0);
+      elTimer.textContent = (game.timeLeft).toFixed(1); elTimer.classList.toggle('low', game.timeLeft < 5);
+      elChalText.textContent = `${challengeText(game.challenge)}  (${game.progress}/${game.challenge.count})`;
+      elProgFill.style.transform = `scaleX(${game.challenge ? (game.progress/game.challenge.count) : 0})`;
+      elHealthFill.style.transform = `scaleX(${clamp(game.health,0,1)})`;
+      elHealthFill.style.background = game.health < 0.25 ? 'linear-gradient(90deg, var(--danger), #ffb199)' : 'linear-gradient(90deg, var(--ok), #f6d365)';
+    }
+
+    function toast(msg, duration=1800, onHide){ elToast.textContent = msg; elToast.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(()=>{ elToast.classList.remove('show'); if(onHide) onHide(); }, duration); }
+    function clearToast(){ elToast.classList.remove('show'); clearTimeout(toast._t); }
+
+    // Restart: immediate start (no 3s pause) and clear any toast
+    if (elRestart) {
+      elRestart.addEventListener('click', ()=>{
+        clearToast();
+        last = performance.now(); // reset dt baseline
+        newGame(false);          // do not pause for next-challenge toast on restart
+      });
+    }
+
+    // Start after DOM laid out so board size is correct
+    window.addEventListener('resize', resize, {passive:true});
+    resize();
+    newGame(true); // first run: show the 3s next-challenge toast
+    requestAnimationFrame(loop);
+  })();
+  </script>
+</body>
+</html>
