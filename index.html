@@ -66,6 +66,41 @@
     const ctx = canvas.getContext('2d');
     let DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
     let W=0,H=0, board = {x:0,y:0,w:0,h:0};
+	let lang = 'en'; // default language
+
+function applyLang() {
+  // Update HUD labels
+  document.querySelector('.badge strong').textContent = lang === 'fr' ? 'Score' : 'Score';
+  // Health label
+  document.querySelectorAll('.badge strong')[1].textContent = lang === 'fr' ? 'Vie' : 'Health';
+  // Timer label can be left numeric
+
+  // Restart button
+  document.getElementById('restart').textContent = lang === 'fr' ? 'Rejouer' : 'Restart';
+}
+
+// Translate challenge text dynamically
+function challengeText(ch){
+  const isFr = (typeof lang !== 'undefined' && lang === 'fr');
+  const size  = isFr ? (ch.size==='S'?'Petit': ch.size==='M'?'Moyen':'Grand')
+                     : (ch.size==='S'?'Small': ch.size==='M'?'Medium':'Large');
+  const color = isFr ? (ch.color==='blue'?'Bleu': ch.color==='red'?'Rouge': ch.color==='yellow'?'Jaune':'Vert')
+                     : ch.color[0].toUpperCase()+ch.color.slice(1);
+  const shape = isFr ? (ch.shape==='triangle'?'Triangle': ch.shape==='circle'?'Cercle':'Carré')
+                     : ch.shape[0].toUpperCase()+ch.shape.slice(1);
+
+  if (isFr) {
+    const sizePl  = ch.count>1 ? size  + 's' : size;
+    const colorPl = ch.count>1 ? color + 's' : color;
+    const shapePl = ch.count>1 ? shape + 's' : shape;
+    return `Collecte ${ch.count} ${sizePl} ${colorPl} ${shapePl}`;
+  } else {
+    const shapePl = ch.count>1 ? shape + 's' : shape;
+    return `Collect ${ch.count} ${size} ${color} ${shapePl}`;
+  }
+}
+
+
     function hudHeight(){
       const r = hudEl.getBoundingClientRect();
       return Math.ceil(r.height + 6); // +6px breathing room
@@ -257,12 +292,6 @@ function replaceCollectedAndGrow(){
 
     function matches(b, ch){ return b.size===ch.size && b.color===ch.color && b.shape===ch.shape; }
 
-    function challengeText(ch){
-      const sizeName = ch.size==='S'?'Small': ch.size==='M'?'Medium':'Large';
-      const colorName = ch.color[0].toUpperCase()+ch.color.slice(1);
-      const shapeName = ch.shape[0].toUpperCase()+ch.shape.slice(1);
-      return `Collect ${ch.count} ${sizeName} ${colorName} ${shapeName}${ch.count>1?'s':''}`;
-    }
 
     function canvasPointFromEvent(e){ const rect = canvas.getBoundingClientRect(); return {x: clamp(e.clientX - rect.left, board.x, board.x+board.w), y: clamp(e.clientY - rect.top, board.y, board.y+board.h)}; }
     canvas.addEventListener('pointerdown', e=>{ if(!game || !game.running || game.paused) return; const p = canvasPointFromEvent(e); game.ball.targetQueue.push(p); if(!game.ball.target) game.ball.target = game.ball.targetQueue.shift(); });
@@ -340,7 +369,8 @@ resolveOverlaps();
       elHealthFill.style.background = game.health < 0.25 ? 'linear-gradient(90deg, var(--danger), #ffb199)' : 'linear-gradient(90deg, var(--ok), #f6d365)';
     }
 
-    function toast(msg, duration=1800, onHide){ elToast.textContent = msg; elToast.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(()=>{ elToast.classList.remove('show'); if(onHide) onHide(); }, duration); }
+    function toast(msg, duration=1800, onHide){
+  elToast.innerHTML = msg; elToast.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(()=>{ elToast.classList.remove('show'); if(onHide) onHide(); }, duration); }
     function clearToast(){ elToast.classList.remove('show'); clearTimeout(toast._t); }
 
     // Restart: immediate start (no 3s pause) and clear any toast
@@ -352,11 +382,41 @@ resolveOverlaps();
       });
     }
 
-    // Start after DOM laid out so board size is correct
-    window.addEventListener('resize', resize, {passive:true});
-    resize();
-    newGame(true); // first run: show the 3s next-challenge toast
-    requestAnimationFrame(loop);
+   // Start after DOM laid out so board size is correct
+window.addEventListener('resize', resize, {passive:true});
+resize();
+applyLang();      // <- set initial labels based on lang
+newGame(true);    // first run
+
+
+// Language toggle toast
+toast(`
+  <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
+    <div>${lang === 'fr' ? 'Choisis ta langue' : 'Choose your language'}</div>
+    <div>
+      <button id="langFR" class="btn">Français</button>
+      <button id="langEN" class="btn">English</button>
+    </div>
+  </div>
+`, 5000, () => {
+  game.paused = false;
+});
+game.paused = true;
+
+// Attach button listeners
+setTimeout(() => {
+  const frBtn = document.getElementById('langFR');
+  const enBtn = document.getElementById('langEN');
+  if (frBtn) frBtn.addEventListener('click', () => {
+    lang = 'fr'; applyLang(); updateHUD(); elToast.classList.remove('show'); game.paused = false;
+  });
+  if (enBtn) enBtn.addEventListener('click', () => {
+    lang = 'en'; applyLang(); updateHUD(); elToast.classList.remove('show'); game.paused = false;
+  });
+}, 0);
+
+requestAnimationFrame(loop);
+
   })();
   </script>
 </body>
