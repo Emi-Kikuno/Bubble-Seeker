@@ -82,18 +82,18 @@ function applyLang() {
 // Translate challenge text dynamically
 function challengeText(ch){
   const isFr = (typeof lang !== 'undefined' && lang === 'fr');
-  const size  = isFr ? (ch.size==='S'?'Petit': ch.size==='M'?'Moyen':'Grand')
+  const size  = isFr ? (ch.size==='S'?'Petite': ch.size==='M'?'Moyenne':'Grande')
                      : (ch.size==='S'?'Small': ch.size==='M'?'Medium':'Large');
-  const color = isFr ? (ch.color==='blue'?'Bleu': ch.color==='red'?'Rouge': ch.color==='yellow'?'Jaune':'Vert')
+  const color = isFr ? (ch.color==='blue'?'bleue': ch.color==='red'?'rouge': ch.color==='yellow'?'jaune':'verte')
                      : ch.color[0].toUpperCase()+ch.color.slice(1);
-  const shape = isFr ? (ch.shape==='triangle'?'Triangle': ch.shape==='circle'?'Cercle':'Carré')
+  const shape = isFr ? (ch.shape==='triangle'?'triangle': ch.shape==='circle'?'cercle':'carré')
                      : ch.shape[0].toUpperCase()+ch.shape.slice(1);
 
   if (isFr) {
     const sizePl  = ch.count>1 ? size  + 's' : size;
     const colorPl = ch.count>1 ? color + 's' : color;
     const shapePl = ch.count>1 ? shape + 's' : shape;
-    return `Collecte ${ch.count} ${sizePl} ${colorPl} ${shapePl}`;
+    return `Collecte ${ch.count} ${sizePl} ${colorPl} avec ${shapePl}`;
   } else {
     const shapePl = ch.count>1 ? shape + 's' : shape;
     return `Collect ${ch.count} ${size} ${color} ${shapePl}`;
